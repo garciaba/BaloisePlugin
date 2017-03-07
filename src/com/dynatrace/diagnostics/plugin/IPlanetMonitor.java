@@ -7,9 +7,9 @@
 
 package com.dynatrace.diagnostics.plugin;
 
-import java.io.IOException;
 import java.net.ConnectException;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -82,7 +82,7 @@ public class IPlanetMonitor implements Monitor {
 	public Status setup(MonitorEnvironment env) throws Exception {
 		Status status = new Status(Status.StatusCode.Success);
 		// check plugin environment configuration parameter values
-		if (env == null || env.getHost() == null) {
+		if (env != null && env.getHost() == null) {
 			status.setStatusCode(Status.StatusCode.ErrorInternalConfigurationProblem);
 			status.setShortMessage("Environment was not properly initialized. env.host must not be null.");
 			status.setMessage("Environment was not properly initialized. env.host must not be null.");
@@ -92,18 +92,26 @@ public class IPlanetMonitor implements Monitor {
 			log.log(Level.SEVERE, status.getMessage(), e);
 			return status;
 		}
-		restAPI = new ServerRestAPI(env.getConfigString("dtServer"), env.getConfigString("username"),
+		
+		if (env != null){
+			restAPI = new ServerRestAPI(env.getConfigString("dtServer"), env.getConfigString("username"),
 				env.getConfigPassword("password"));
+		}else{
+			restAPI = new ServerRestAPI("localhost", "admin", "admin");
+		}
+		
 		rangeGroup = new RangeGroup();
 
-		Collection<MonitorMeasure> measureNetDiff = env.getMonitorMeasures("NettoGroup", "netDiff");
-		for (MonitorMeasure measure : measureNetDiff) {
-			measure.setValue(0);
-		}
-
-		Collection<MonitorMeasure> measureRangeGroup = env.getMonitorMeasures("RangeGroup", "Range");
-		for (MonitorMeasure measure : measureRangeGroup) {
-			measure.setValue(0);
+		if (env != null){
+			Collection<MonitorMeasure> measureNetDiff = env.getMonitorMeasures("NettoGroup", "netDiff");
+			for (MonitorMeasure measure : measureNetDiff) {
+				measure.setValue(0);
+			}
+	
+			Collection<MonitorMeasure> measureRangeGroup = env.getMonitorMeasures("RangeGroup", "Range");
+			for (MonitorMeasure measure : measureRangeGroup) {
+				measure.setValue(0);
+			}
 		}
 		return status;
 	}
@@ -119,7 +127,11 @@ public class IPlanetMonitor implements Monitor {
 
 			TrustSSL.trustAllCerts();
 			// Return the XML document
-			doc = restAPI.getDashboard(env.getConfigString("dashboardName"));
+			if (env != null){
+				doc = restAPI.getDashboard(env.getConfigString("dashboardName"));
+			}else{
+				doc = restAPI.getDashboard("Baloise");
+			}
 
 			NodeList dashlets = doc.getElementsByTagName("chartdashlet");
 			//docEle.getChildNodes();
@@ -155,35 +167,40 @@ public class IPlanetMonitor implements Monitor {
 			if (dashletChildren.item(i).getNodeName().equals("measures")){// Get all measures
 				NodeList measureNodes = dashletChildren.item(i).getChildNodes(); 
 				
-				Collection<MonitorMeasure> monitorMeasures = env.getMonitorMeasures("NettoGroup", "netDiff");
-
-
-				//Collection<MonitorMeasure> monitorMeasures = env.getMonitorMeasures("NettoGroup", "netDiff");
+				Collection<MonitorMeasure> monitorMeasures;
+				if (env != null){
+					monitorMeasures = env.getMonitorMeasures("NettoGroup", "netDiff");
+				}else{
+					monitorMeasures = new ArrayList<MonitorMeasure>();
+					monitorMeasures.add(null);
+				}
+				
+				Node node1 = null;
+				Node node2 = null;
 				int nodeLength = measureNodes.getLength();
-				if (nodeLength > 1) {
-					//There are both PurePath and Waittime nodes to calculate
-					for (int nodeIndex = 0; nodeIndex < nodeLength - 1; nodeIndex += 2) {
-						BaloiseMeasureCalculator cal = new BaloiseMeasureCalculator(measureNodes.item(nodeIndex),
-								measureNodes.item(nodeIndex + 1));
-
-						for (MonitorMeasure subscribedMonitorMeasure : monitorMeasures) {
-							// Create dynamic measures
-							MonitorMeasure dynamicMeasure = env.createDynamicMeasure(subscribedMonitorMeasure, "NetDiff-" + chartName,
-									cal.getMeasure1NamePrefix());
-							dynamicMeasure.setValue(cal.calculateNetDiff());
+				for (int nodeIndex = 0; nodeIndex < nodeLength; nodeIndex++) {
+					Node currentNode = measureNodes.item(nodeIndex);
+					if (currentNode.getNodeName().equals("measure")){
+						if (node1 == null){
+							node1 = currentNode;
+						}else{
+							node2 = currentNode;
 						}
 					}
-				} else if (nodeLength == 1){
-					//There are only Purepath nodes to calculate
-					BaloiseMeasureCalculator cal = new BaloiseMeasureCalculator(measureNodes.item(0));
-					for (MonitorMeasure subscribedMonitorMeasure : monitorMeasures) {
-						// Create dynamic measures
-						MonitorMeasure dynamicMeasure = env.createDynamicMeasure(subscribedMonitorMeasure, "NetDiff-" + chartName,
-								cal.getMeasure1NamePrefix());
-						dynamicMeasure.setValue(cal.calculateNetDiff());
+				}
+				
+				BaloiseMeasureCalculator cal = new BaloiseMeasureCalculator(node1, node2);
 
+				for (MonitorMeasure subscribedMonitorMeasure : monitorMeasures) {
+					// Create dynamic measures
+					if (env != null){
+						MonitorMeasure dynamicMeasure = env.createDynamicMeasure(subscribedMonitorMeasure, "NetDiff-" + chartName,
+							cal.getMeasure1NamePrefix());
+						dynamicMeasure.setValue(cal.calculateNetDiff());
+					}else{
+						System.out.println("NetDiff-" + chartName + " - " + cal.getMeasure1NamePrefix() + " - " + cal.calculateNetDiff());
 					}
-				} 
+				}
 			}
 		}
 	}
@@ -230,30 +247,6 @@ public class IPlanetMonitor implements Monitor {
 	@Override
 	public void teardown(MonitorEnvironment env) throws Exception {
 		HttpsURLConnection.setDefaultHostnameVerifier(defaultVerifier);
-	}
-
-	private void logSevere(String message) {
-		if (log.isLoggable(Level.SEVERE)) {
-			log.severe(message);
-		}
-	}
-
-	private void logWarn(String message) {
-		if (log.isLoggable(Level.WARNING)) {
-			log.warning(message);
-		}
-	}
-
-	private void logInfo(String message) {
-		if (log.isLoggable(Level.INFO)) {
-			log.info(message);
-		}
-	}
-
-	private void logFine(String message) {
-		if (log.isLoggable(Level.FINE)) {
-			log.fine(message);
-		}
 	}
 }
 
