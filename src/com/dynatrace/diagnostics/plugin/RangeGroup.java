@@ -1,113 +1,55 @@
-/**
- * 
- */
 package com.dynatrace.diagnostics.plugin;
 
-/**
- * @author Jose.Colella
- *
- */
+import java.util.Map.Entry;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+
+import com.dynatrace.diagnostics.pdk.MonitorEnvironment;
+import com.dynatrace.diagnostics.pdk.MonitorMeasure;
+
 public class RangeGroup {
+
+	NavigableMap<Integer,Integer> groups = new TreeMap<Integer, Integer>();
 	
-	private static final double oneThousandThreshold = 1000;
-	private static final double twoThousandThreshold = 2000;
-	private static final double threeThousandThreshold = 3000;
-	private static final double fourThousandThreshold = 4000;
-	private static final double fiveThousandThreshold = 5000;
-	private static final double tenThousandThreshold = 10000;
-	private static final double fifteenThousandThreshold = 15000;
-	
-	
-	private Integer numberLessOneSecond;
-	private Integer betweenOneTwoSecond;
-	private Integer betweenTwoThreeSecond;
-	private Integer betweenThreeFourSecond;
-	private Integer betweenFourFiveSecond;
-	private Integer betweenFiveTenSecond;
-	private Integer betweenTenFifteenSecond;
-	private Integer moreFifteenSecond;
-	
-	public RangeGroup() {
-		this.resetGroup();
-	}
-	
-	
-	
-	public Integer getNumberLessOneSecond() {
-		return numberLessOneSecond;
-	}
-	/**
-	 * @return the betweenOneTwoSecond
-	 */
-	public Integer getBetweenOneTwoSecond() {
-		return betweenOneTwoSecond;
-	}
-	/**
-	 * @return the betweenTwoThreeSecond
-	 */
-	public Integer getBetweenTwoThreeSecond() {
-		return betweenTwoThreeSecond;
-	}
-	/**
-	 * @return the betweenThreeFourSecond
-	 */
-	public Integer getBetweenThreeFourSecond() {
-		return betweenThreeFourSecond;
-	}
-	/**
-	 * @return the betweenFourFiveSecond
-	 */
-	public Integer getBetweenFourFiveSecond() {
-		return betweenFourFiveSecond;
-	}
-	/**
-	 * @return the betweenFiveTenSecond
-	 */
-	public Integer getBetweenFiveTenSecond() {
-		return betweenFiveTenSecond;
-	}
-	/**
-	 * @return the betweenTenFifteenSecond
-	 */
-	public Integer getBetweenTenFifteenSecond() {
-		return betweenTenFifteenSecond;
-	}
-	/**
-	 * @return the moreFifteenSecond
-	 */
-	public Integer getMoreFifteenSecond() {
-		return moreFifteenSecond;
-	}
-	
-	public void calculateGroup(double result) {
-		if (result >= fifteenThousandThreshold) {
-		    this.moreFifteenSecond+=1;
-		} else if (result >= tenThousandThreshold && result < fifteenThousandThreshold) {
-		    this.betweenTenFifteenSecond+=1;
-		} else if (result >= fiveThousandThreshold && result < tenThousandThreshold) {
-		    this.betweenFiveTenSecond+=1;
-		} else if (result >= fourThousandThreshold && result < fiveThousandThreshold) {
-		    this.betweenFourFiveSecond+=1;
-		} else if (result >= threeThousandThreshold && result < fourThousandThreshold) {
-		    this.betweenThreeFourSecond+=1;
-		} else if (result >= twoThousandThreshold && result < threeThousandThreshold) {
-		    this.betweenTwoThreeSecond+=1;
-		} else if (result >= oneThousandThreshold && result < twoThousandThreshold) {
-		    this.betweenOneTwoSecond+=1;
-		} else if (result < oneThousandThreshold) {
-		    this.numberLessOneSecond+=1;
+	public RangeGroup(String[] groupArray) {
+		for (String group : groupArray) {
+			groups.put(Integer.parseInt(group), 0);
+			groups.put(Integer.MAX_VALUE, 0);
 		}
 	}
 	
-	public void resetGroup() {
-		this.numberLessOneSecond = 0;
-		this.betweenOneTwoSecond = 0;
-		this.betweenTwoThreeSecond = 0;
-		this.betweenThreeFourSecond = 0;
-		this.betweenFourFiveSecond = 0;
-		this.betweenFiveTenSecond = 0;
-		this.betweenTenFifteenSecond = 0;
-		this.moreFifteenSecond = 0;
+	public void addToGroup(double value) {
+		for (Entry<Integer, Integer> group : groups.entrySet()) {
+			if (value < group.getKey()){
+				groups.put(group.getKey(), group.getValue() + 1);
+				IPlanetMonitor.log.finer("added to group " + group.getKey());
+				break;
+			}
+		}
+	}
+	
+	public void sendMeasures(MonitorEnvironment env, MonitorMeasure measure, String dashletName){
+		int previousValue = 0;
+		for (Entry<Integer, Integer> group : groups.entrySet()) {
+			String currentValueString = "-" + String.valueOf(group.getKey());
+			if (group.getKey() == Integer.MAX_VALUE){
+				currentValueString = "+";
+			}
+			String range = previousValue + currentValueString;
+			if (env == null || measure == null){
+				System.out.println("Range-" + dashletName + " - " + range + " = " + group.getValue());
+			}else{
+				IPlanetMonitor.log.finer("Result: Range-" + dashletName + " - " + range + " = " + group.getValue());
+				env.createDynamicMeasure(measure, "Range-" + dashletName, range).setValue(group.getValue());;
+			}
+			previousValue = group.getKey();
+		}
+	}
+	
+	public void resetGroups() {
+		for (Integer group : groups.keySet()) {
+			groups.put(group, 0);
+		}
 	}
 	
 	

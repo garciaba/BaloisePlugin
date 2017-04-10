@@ -7,10 +7,9 @@
 
 package com.dynatrace.diagnostics.plugin;
 
+import java.io.StringWriter;
 import java.net.ConnectException;
 import java.security.cert.X509Certificate;
-import java.util.ArrayList;
-import java.util.Collection;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -20,10 +19,16 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerException;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
 import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathFactory;
 
 import org.w3c.dom.Document;
+import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
@@ -35,14 +40,11 @@ import com.dynatrace.diagnostics.pdk.Status;
 
 public class IPlanetMonitor implements Monitor {
 
-	private static final Logger log = Logger.getLogger(IPlanetMonitor.class.getName());
+	public static final Logger log = Logger.getLogger(IPlanetMonitor.class.getName());
 
-	/**
-	 * The RangeGroup that will calculate the different second range groups Set
-	 * range section < 1 seconds && >1s & <2s && >2s & <3s & >3s & <4s & >4s &
-	 * <5s & >5s & <10s && >10s & <15s & > 15s
-	 */
 	private RangeGroup rangeGroup;
+
+	private String waitMethod;
 
 	/**
 	 * The restAPI is the variable allowing access to the data displayed in
@@ -80,6 +82,7 @@ public class IPlanetMonitor implements Monitor {
 
 	@Override
 	public Status setup(MonitorEnvironment env) throws Exception {
+		log.info("calling setup");
 		Status status = new Status(Status.StatusCode.Success);
 		// check plugin environment configuration parameter values
 		if (env != null && env.getHost() == null) {
@@ -96,51 +99,43 @@ public class IPlanetMonitor implements Monitor {
 		if (env != null){
 			restAPI = new ServerRestAPI(env.getConfigString("dtServer"), env.getConfigString("username"),
 				env.getConfigPassword("password"));
+			log.info("Created ServerRestAPI");
+			rangeGroup = new RangeGroup(env.getConfigString("buckets").split(","));
+			waitMethod = env.getConfigString("SubtractMethod");
 		}else{
 			restAPI = new ServerRestAPI("localhost", "admin", "admin");
+			rangeGroup = new RangeGroup("1000,2000,3000,4000,5000,10000,15000".split(","));
+			waitMethod = "org.eclipse.jface.window.Window.runEventLoop(org.eclipse.swt.widgets.Shell loopShell)";
 		}
 		
-		rangeGroup = new RangeGroup();
-
-		if (env != null){
-			Collection<MonitorMeasure> measureNetDiff = env.getMonitorMeasures("NettoGroup", "netDiff");
-			for (MonitorMeasure measure : measureNetDiff) {
-				measure.setValue(0);
-			}
-	
-			Collection<MonitorMeasure> measureRangeGroup = env.getMonitorMeasures("RangeGroup", "Range");
-			for (MonitorMeasure measure : measureRangeGroup) {
-				measure.setValue(0);
-			}
-		}
+		log.info("finished setup");
 		return status;
 	}
 
 	@Override
 	public Status execute(MonitorEnvironment env) throws Exception {
+		log.info("calling execute");
 		Status status = new Status();
-
-		// Reset all ranges to 0
-		rangeGroup.resetGroup();
 
 		try {
 
 			TrustSSL.trustAllCerts();
 			// Return the XML document
 			if (env != null){
+				log.fine("getting dashboard " + env.getConfigString("dashboardName"));
 				doc = restAPI.getDashboard(env.getConfigString("dashboardName"));
 			}else{
-				doc = restAPI.getDashboard("Baloise");
+				log.fine("getting dashboard Baloise3");
+				doc = restAPI.getDashboard("Baloise3");
 			}
+			log.finer(getString(doc));
 
-			NodeList dashlets = doc.getElementsByTagName("chartdashlet");
-			//docEle.getChildNodes();
+			NodeList dashlets = doc.getElementsByTagName("purepathsdashlet");
+
 			if (dashlets != null) {
 				int length = dashlets.getLength();
 				for (int i = 0; i < length; i++) {
-					
 					calculateAllDashlets(env, dashlets.item(i));
-					
 				}
 			}
 			
@@ -150,59 +145,114 @@ public class IPlanetMonitor implements Monitor {
 			status.setStatusCode(Status.StatusCode.PartialSuccess);
 			status.setShortMessage(ce == null ? "" : ce.getClass().getSimpleName());
 			log.log(Level.SEVERE, status.getMessage(), ce);
+			ce.printStackTrace();
 		} catch (Exception ioe) {
 			status.setException(ioe);
 			status.setStatusCode(Status.StatusCode.ErrorTargetServiceExecutionFailed);
 			status.setShortMessage(ioe == null ? "" : ioe.getClass().getSimpleName());
+			log.log(Level.SEVERE, status.getMessage(), ioe);
+			ioe.printStackTrace();
 		}
 
+		log.info("finished execute");
 		return status;
 	}
 
 	private void calculateAllDashlets(MonitorEnvironment env, Node dashlet) {
-		String chartName = dashlet.getAttributes().getNamedItem("name").getNodeValue();
+		rangeGroup.resetGroups();
+		String dashletName = dashlet.getAttributes().getNamedItem("name").getNodeValue();
+		log.fine("Calculating " + dashletName);
 		
 		NodeList dashletChildren = dashlet.getChildNodes();
 		for (int i = 0; i < dashletChildren.getLength(); i++) {
-			if (dashletChildren.item(i).getNodeName().equals("measures")){// Get all measures
-				NodeList measureNodes = dashletChildren.item(i).getChildNodes(); 
+			if (dashletChildren.item(i).getNodeName().equals("purepaths")){// Get all measures
 				
-				Collection<MonitorMeasure> monitorMeasures;
-				if (env != null){
-					monitorMeasures = env.getMonitorMeasures("NettoGroup", "netDiff");
-				}else{
-					monitorMeasures = new ArrayList<MonitorMeasure>();
-					monitorMeasures.add(null);
-				}
-				
-				Node node1 = null;
-				Node node2 = null;
-				int nodeLength = measureNodes.getLength();
+				NodeList purePathNodes = dashletChildren.item(i).getChildNodes(); 
+				int nodeLength = purePathNodes.getLength();
+				double sumNetDiff = 0;
+				double countNetDiff = 0;
 				for (int nodeIndex = 0; nodeIndex < nodeLength; nodeIndex++) {
-					Node currentNode = measureNodes.item(nodeIndex);
-					if (currentNode.getNodeName().equals("measure")){
-						if (node1 == null){
-							node1 = currentNode;
-						}else{
-							node2 = currentNode;
-						}
+					Node purePathNode = purePathNodes.item(nodeIndex);
+					if (purePathNode.getNodeName().equals("purepath")){
+						log.finer("Found PurePath " + purePathNode.getAttributes().getNamedItem("name").getNodeValue());
+						double netDiff = 0;
+						double purePathResponseTime = Double.parseDouble(purePathNode.getAttributes().getNamedItem("response_time").getNodeValue());
+						double methodWaitTime = getMethodWaitTime(purePathNode);
+						
+						netDiff = Math.max(0, purePathResponseTime - methodWaitTime);
+						log.finer("purePathResponseTime " + purePathResponseTime);
+						log.finer("methodWaitTime " + methodWaitTime);
+						log.finer("netDiff " + netDiff);
+						
+						rangeGroup.addToGroup(netDiff);
+						sumNetDiff += netDiff;
+						countNetDiff++;
 					}
 				}
-				
-				BaloiseMeasureCalculator cal = new BaloiseMeasureCalculator(node1, node2);
-
-				for (MonitorMeasure subscribedMonitorMeasure : monitorMeasures) {
-					// Create dynamic measures
+				if (countNetDiff > 0){
+					double finalNetDiff = sumNetDiff / countNetDiff;
 					if (env != null){
-						MonitorMeasure dynamicMeasure = env.createDynamicMeasure(subscribedMonitorMeasure, "NetDiff-" + chartName,
-							cal.getMeasure1NamePrefix());
-						dynamicMeasure.setValue(cal.calculateNetDiff());
+						MonitorMeasure monitorMeasure = env.getMonitorMeasures("NetDiff", "netDiff").iterator().next();
+						MonitorMeasure dynamicMeasure = env.createDynamicMeasure(monitorMeasure, "NetDiff",
+								dashletName);
+						dynamicMeasure.setValue(finalNetDiff);
+						log.finer("Result: NetDiff-" + dashletName + " - " + finalNetDiff);
 					}else{
-						System.out.println("NetDiff-" + chartName + " - " + cal.getMeasure1NamePrefix() + " - " + cal.calculateNetDiff());
+						System.out.println("NetDiff-" + dashletName + " - " + finalNetDiff);
 					}
 				}
 			}
 		}
+		
+		if (env == null){
+			rangeGroup.sendMeasures(null, null, dashletName);
+		}else{
+			rangeGroup.sendMeasures(env, env.getMonitorMeasures("NetDiff", "Bucket").iterator().next(), dashletName);
+		}
+		log.fine("Finished calculating " + dashletName);
+	}
+
+	private double getMethodWaitTime(Node node) {
+		double returnValue = 0;
+		NodeList nodeChildren = node.getChildNodes();
+		for (int i = 0; i < nodeChildren.getLength(); i++) {
+			Node currentNode = nodeChildren.item(i);
+			if (currentNode.getNodeName().equals("node")){
+				NamedNodeMap attributes = currentNode.getAttributes();
+				Node className = attributes.getNamedItem("class");
+				Node methodName = attributes.getNamedItem("method");
+//				Node breakdown = attributes.getNamedItem("breakdown");
+				Node totaltime = attributes.getNamedItem("totaltime");
+				log.finest("className " + className);
+				log.finest("methodName " + methodName);
+				log.finest("totaltime " + totaltime);
+				if (className!= null && methodName != null && totaltime != null){
+					if ((className.getNodeValue() + "." + methodName.getNodeValue()).equals(waitMethod)){
+//						double waitTime = 0;
+//						String[] breakdownParts = breakdown.getNodeValue().split(", ");
+//						for (String breakdownPart : breakdownParts) {
+//							if (breakdownPart.contains("Wait Total: ")){
+//								waitTime = Double.parseDouble(breakdownPart.substring("Wait Total: ".length(), breakdownPart.length() - " ms".length()).replace(",", ""));
+//							}
+//						}
+						log.finer("adding to wait time " + Double.parseDouble(totaltime.getNodeValue()));
+						returnValue += Double.parseDouble(totaltime.getNodeValue());
+					}
+				}
+				returnValue += getMethodWaitTime(currentNode);
+			}
+		}
+		return returnValue;
+	}
+	
+	private String getString(Document doc) throws TransformerException{ 
+		DOMSource domSource = new DOMSource(doc);
+		StringWriter writer = new StringWriter();
+		StreamResult result = new StreamResult(writer);
+		TransformerFactory tf = TransformerFactory.newInstance();
+		Transformer transformer = tf.newTransformer();
+		transformer.transform(domSource, result);
+		return writer.toString();
 	}
 
 	/**
@@ -246,7 +296,9 @@ public class IPlanetMonitor implements Monitor {
 	 */
 	@Override
 	public void teardown(MonitorEnvironment env) throws Exception {
+		log.info("calling teardown");
 		HttpsURLConnection.setDefaultHostnameVerifier(defaultVerifier);
+		log.info("finished teardown");
 	}
 }
 
